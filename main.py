@@ -1,4 +1,4 @@
-# main.py (bot)
+# main.py (bot) - Ko'p foydalanuvchili versiya + Profile o'zgartirish
 
 import logging
 import os
@@ -50,8 +50,6 @@ SELLERS_FILE = "sellers.json"
 TZ_UZB = pytz.timezone('Asia/Tashkent')
 REPORT_LIMIT = 8 # Hisobotni matn yoki Excelda yuborish chegarasi
 
-
-
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -60,6 +58,86 @@ def is_admin(user_id):
     """Foydalanuvchi admin ekanligini tekshirish"""
     return user_id in ADMIN_CHAT_IDS
 
+def is_seller(user_id):
+    """Foydalanuvchi sotuvchi ekanligini tekshirish"""
+    sellers = load_json(SELLERS_FILE)
+    for seller_name, user_ids in sellers.items():
+        if isinstance(user_ids, list):
+            if user_id in user_ids:
+                return True
+        elif isinstance(user_ids, int):
+            if user_id == user_ids:
+                return True
+    return False
+
+def get_seller_name_by_user_id(user_id):
+    """User ID bo'yicha sotuvchi nomini topish"""
+    sellers = load_json(SELLERS_FILE)
+    for seller_name, user_ids in sellers.items():
+        if isinstance(user_ids, list):
+            if user_id in user_ids:
+                return seller_name
+        elif isinstance(user_ids, int):
+            if user_id == user_ids:
+                return seller_name
+    return None
+
+def get_seller_user_ids(seller_name):
+    """Sotuvchi nomiga tegishli barcha user ID larni olish"""
+    sellers = load_json(SELLERS_FILE)
+    user_ids = sellers.get(seller_name, [])
+    if isinstance(user_ids, int):
+        return [user_ids]
+    elif isinstance(user_ids, list):
+        return user_ids
+    return []
+
+def add_user_to_seller(seller_name, user_id):
+    """Sotuvchiga yangi foydalanuvchi qo'shish"""
+    sellers = load_json(SELLERS_FILE)
+
+    if seller_name not in sellers:
+        sellers[seller_name] = [user_id]
+    else:
+        current_ids = sellers[seller_name]
+
+        # Agar hozirgi qiymat int bo'lsa, uni list ga aylantirish
+        if isinstance(current_ids, int):
+            if current_ids != user_id:
+                sellers[seller_name] = [current_ids, user_id]
+        # Agar list bo'lsa va user_id yo'q bo'lsa qo'shish
+        elif isinstance(current_ids, list):
+            if user_id not in current_ids:
+                sellers[seller_name].append(user_id)
+        else:
+            sellers[seller_name] = [user_id]
+
+    save_json(sellers, SELLERS_FILE)
+    return True
+
+def remove_user_from_all_sellers(user_id):
+    """Foydalanuvchini barcha sotuvchilardan o'chirish (profil o'zgartirish uchun)"""
+    sellers = load_json(SELLERS_FILE)
+    old_seller_name = None
+
+    for seller_name, user_ids in sellers.items():
+        if isinstance(user_ids, list):
+            if user_id in user_ids:
+                old_seller_name = seller_name
+                sellers[seller_name].remove(user_id)
+                # Agar ro'yxat bo'sh qolsa, sotuvchini o'chirish
+                if not sellers[seller_name]:
+                    del sellers[seller_name]
+                break
+        elif isinstance(user_ids, int):
+            if user_ids == user_id:
+                old_seller_name = seller_name
+                del sellers[seller_name]
+                break
+
+    save_json(sellers, SELLERS_FILE)
+    return old_seller_name
+
 async def send_message_to_all_admins(context: ContextTypes.DEFAULT_TYPE, message: str, parse_mode=None):
     """Barcha adminlarga xabar yuborish"""
     for admin_id in ADMIN_CHAT_IDS:
@@ -67,6 +145,15 @@ async def send_message_to_all_admins(context: ContextTypes.DEFAULT_TYPE, message
             await context.bot.send_message(admin_id, message, parse_mode=parse_mode)
         except Exception as e:
             logger.error(f"Admin {admin_id} ga xabar yuborishda xatolik: {e}")
+
+async def send_message_to_seller_users(context: ContextTypes.DEFAULT_TYPE, seller_name: str, message: str, parse_mode=None):
+    """Sotuvchining barcha foydalanuvchilariga xabar yuborish"""
+    user_ids = get_seller_user_ids(seller_name)
+    for user_id in user_ids:
+        try:
+            await context.bot.send_message(user_id, message, parse_mode=parse_mode)
+        except Exception as e:
+            logger.error(f"Sotuvchi '{seller_name}' ning foydalanuvchisi {user_id} ga xabar yuborishda xatolik: {e}")
 
 # --- JSON FAYL BILAN ISHLASH FUNKSIYALARI ---
 def load_json(filename):
@@ -169,7 +256,7 @@ def create_seller_keyboard():
     keyboard = [
         [KeyboardButton("📊 Mening hisobotim"), KeyboardButton("⏰ Muddati o'tganlar")],
         [KeyboardButton("📅 5 kun qolganlar"), KeyboardButton("📈 Barcha qarzdorliklar")],
-        [KeyboardButton("🔍 Mijoz qidirish")]  # Yangi tugma
+        [KeyboardButton("🔍 Mijoz qidirish"), KeyboardButton("🔄 Profil o'zgartirish")]  # Yangi tugma qo'shildi
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -184,6 +271,26 @@ def create_seller_selection_keyboard():
         if i + 1 < len(sellers):
             row.append(InlineKeyboardButton(sellers[i + 1], callback_data=f"admin_seller_{sellers[i + 1]}"))
         keyboard.append(row)
+    return InlineKeyboardMarkup(keyboard)
+
+def create_profile_change_keyboard():
+    """Profil o'zgartirish uchun sotuvchilar ro'yxatini yaratish"""
+    all_debts = load_json(DATA_FILE)
+    if not all_debts:
+        return None
+
+    keyboard = []
+    sellers = sorted(list(all_debts.keys()))
+
+    for i in range(0, len(sellers), 2):
+        row = [InlineKeyboardButton(sellers[i], callback_data=f"change_profile_{sellers[i]}")]
+        if i + 1 < len(sellers):
+            row.append(InlineKeyboardButton(sellers[i + 1], callback_data=f"change_profile_{sellers[i + 1]}"))
+        keyboard.append(row)
+
+    # Bekor qilish tugmasi
+    keyboard.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_profile_change")])
+
     return InlineKeyboardMarkup(keyboard)
 
 # --- SEARCH FUNKSIYALAR ---
@@ -306,49 +413,164 @@ async def handle_search_navigation(query, context: ContextTypes.DEFAULT_TYPE, ac
         logger.error(f"Xabarni yangilashda xatolik: {e}")
         await query.answer("❌ Xabarni yangilashda xatolik")
 
-# --- ESLATMALAR VA REJALASHTIRISH ---
+# --- PROFIL O'ZGARTIRISH FUNKSIYALARI ---
+async def handle_profile_change_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Profil o'zgartirish so'rovini ishlab chiqish"""
+    user_id = update.effective_chat.id
+    current_seller = get_seller_name_by_user_id(user_id)
+
+    if not current_seller:
+        await update.message.reply_text("❌ Siz hali ro'yxatdan o'tmagansiz. /start buyrug'ini bosing.")
+        return
+
+    keyboard = create_profile_change_keyboard()
+    if not keyboard:
+        await update.message.reply_text("❌ Ma'lumotlar bazasi bo'sh yoki sotuvchilar topilmadi.")
+        return
+
+    message = (
+        f"🔄 **Profil o'zgartirish**\n\n"
+        f"🔹 Hozirgi profilingiz: **{current_seller}**\n\n"
+        f"👇 Yangi profil tanlang:"
+    )
+
+    await update.message.reply_text(message, reply_markup=keyboard, parse_mode='Markdown')
+
+async def handle_profile_change_selection(query, context: ContextTypes.DEFAULT_TYPE, new_seller_name: str):
+    """Yangi profil tanlanganida ishlov berish"""
+    user_id = query.from_user.id
+    user_name = query.from_user.first_name or "Foydalanuvchi"
+
+    # Eski profilni topish
+    old_seller_name = get_seller_name_by_user_id(user_id)
+
+    if old_seller_name == new_seller_name:
+        await query.edit_message_text(f"ℹ️ Siz allaqachon **{new_seller_name}** profilida turibsiz.")
+        await query.answer()
+        return
+
+    # Eski profildan o'chirish
+    removed_from = remove_user_from_all_sellers(user_id)
+
+    # Yangi profilga qo'shish
+    add_user_to_seller(new_seller_name, user_id)
+
+    # Foydalanuvchiga xabar
+    unknown_text = "Noma'lum"
+    message = (
+        f"✅ **Profil muvaffaqiyatli o'zgartirildi!**\n\n"
+        f"🔸 Eski profil: {removed_from or unknown_text}\n"
+        f"🔸 Yangi profil: **{new_seller_name}**\n\n"
+        f"🎯 Yangi panel tayyor!"
+    )
+
+    await query.edit_message_text(message, parse_mode='Markdown')
+
+    # Yangi klaviaturani yuborish
+    await context.bot.send_message(user_id, f"👋 Xush kelibsiz, {new_seller_name}!", reply_markup=create_seller_keyboard())
+
+    # Adminlarga xabar yuborish
+    unknown_text = "Noma'lum"
+    admin_message = (
+        f"🔄 **Profil o'zgarishi:**\n\n"
+        f"👤 Foydalanuvchi: {user_name} ({user_id})\n"
+        f"🔸 Eski: {removed_from or unknown_text}\n"
+        f"🔸 Yangi: {new_seller_name}"
+    )
+    await send_message_to_all_admins(context, admin_message, parse_mode='Markdown')
+
+    await query.answer()
+
+
+# ESKI KOD O'RNIGA - send_daily_reminders funksiyasini almashtiring
+
 async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Kunlik eslatmalarni yuborish boshlandi.")
     all_debts = load_json(DATA_FILE)
     sellers = load_json(SELLERS_FILE)
 
-    for seller_name, chat_id in sellers.items():
+    for seller_name, user_ids_data in sellers.items():
         seller_debts = all_debts.get(seller_name, [])
+
+        # Muddati o'tgan qarzdorliklar
         overdue_debts = [debt for debt in seller_debts if "o'tdi" in debt.get('Muddati', '')]
 
-        if overdue_debts:
-            message = "🔔 **Muddati o'tgan qarzdorliklar bo'yicha eslatma:**\n\n"
-            for debt in overdue_debts:
-                customer_name = debt.get('Mijoz Ismi', 'N/A')
-                customer_phone = debt.get('Mijoz Telefoni', 'N/A')
-                remaining_amount = debt.get('Qolgan Summa', 0)
-                payment_date = debt.get('To\'lov Muddati', 'N/A')
-                deadline = debt.get('Muddati', 'N/A')
+        # 5 kun qolganlar
+        upcoming_debts = []
+        for debt in seller_debts:
+            muddati = debt.get('Muddati', '')
+            if "qoldi" in muddati:
+                try:
+                    kun = int(muddati.split()[0])
+                    if 0 < kun <= 5:
+                        upcoming_debts.append(debt)
+                except (ValueError, IndexError):
+                    continue
+            elif "Bugun" in muddati:
+                upcoming_debts.append(debt)
 
-                message += (
-                    f"👤 **Mijoz:** {customer_name}\n"
-                    f"📞 **Telefon:** {customer_phone}\n"
-                    f"💰 **Qolgan qarz:** {remaining_amount:,.0f} so'm\n"
-                    f"🗓️ **To'lov sanasi:** {payment_date} ({deadline})\n\n"
-                )
+        # Agar ikkalasi ham bo'sh bo'lsa, keyingisiga o'tish
+        if not overdue_debts and not upcoming_debts:
+            continue
+
+        # Context-like obyekt yaratish send_report uchun
+        class FakeUpdate:
+            def __init__(self, chat_ids):
+                self.chat_ids = chat_ids
+
+            @property
+            def effective_chat(self):
+                # Birinchi user_id ni qaytarish (send_report faqat chat_id olish uchun)
+                return type('Chat', (), {'id': self.chat_ids[0] if self.chat_ids else 0})()
+
+        # User IDs ni olish
+        if isinstance(user_ids_data, list):
+            user_ids = user_ids_data
+        elif isinstance(user_ids_data, int):
+            user_ids = [user_ids_data]
+        else:
+            continue
+
+        # Har bir foydalanuvchiga yuborish
+        for user_id in user_ids:
             try:
-                await context.bot.send_message(chat_id, message, parse_mode='Markdown')
-                logger.info(f"'{seller_name}' ga eslatma yuborildi.")
+                # Muddati o'tganlar
+                if overdue_debts:
+                    fake_update = type('Update', (), {'effective_chat': type('Chat', (), {'id': user_id})()})()
+                    await send_report(
+                        fake_update,
+                        context,
+                        overdue_debts,
+                        "🔔 Muddati o'tgan qarzdorliklar (Kunlik eslatma)",
+                        f"kunlik_muddati_otgan_{seller_name}"
+                    )
+
+                # 5 kun qolganlar
+                if upcoming_debts:
+                    fake_update = type('Update', (), {'effective_chat': type('Chat', (), {'id': user_id})()})()
+                    await send_report(
+                        fake_update,
+                        context,
+                        upcoming_debts,
+                        "⏰ Yaqinlashayotgan to'lov mudatlari (5 kun ichida)",
+                        f"kunlik_5kun_qolgan_{seller_name}"
+                    )
+
+                # Logger xabarini ham o'chirish mumkin yoki qoldirish mumkin (faqat log uchun)
+
             except Exception as e:
-                logger.error(f"'{seller_name}' ga eslatma yuborishda xatolik: {e}")
+                logger.error(f"'{seller_name}' ning foydalanuvchisi {user_id} ga eslatma yuborishda xatolik: {e}")
+
+
+    logger.info("Kunlik eslatmalar yuborish yakunlandi.")
 
 async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
     """Rejalashtirilgan vazifa - ma'lumotlarni yangilash va eslatmalar yuborish"""
-    await send_message_to_all_admins(context, "⏳ Reja bo'yicha ma'lumotlarni yangilash boshlandi...")
     success = await update_data_from_billz()
     if success:
         await send_daily_reminders(context)
-        await send_message_to_all_admins(
-            context, "✅ Ma'lumotlar muvaffaqiyatli yangilandi va eslatmalar yuborildi."
-        )
     else:
         await send_message_to_all_admins(context, "❌ Reja bo'yicha ma'lumotlarni yangilashda xatolik yuz berdi.")
-
 # --- BOT BUYRUQLARI VA HANDLERLAR ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_chat.id
@@ -358,27 +580,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"👋 Salom, {user_name}! Siz administratorsiz.", reply_markup=create_admin_keyboard())
         return
 
-    sellers = load_json(SELLERS_FILE)
-    seller_name = next((name for name, chat_id in sellers.items() if chat_id == user_id), None)
-
+    # Sotuvchi ekanligini tekshirish
+    seller_name = get_seller_name_by_user_id(user_id)
     if seller_name:
         await update.message.reply_text(f"👋 Xush kelibsiz, {seller_name}!", reply_markup=create_seller_keyboard())
         return
 
+    # Barcha mavjud sotuvchilarni ko'rsatish (har kimga ruxsat berish)
     all_debts = load_json(DATA_FILE)
     if not all_debts:
         await update.message.reply_text("❌ Hozircha ma'lumotlar bazasi bo'sh. Administrator yangilashini kuting.")
         return
 
-    all_seller_names = list(all_debts.keys())
-    registered_seller_names = list(sellers.keys())
-    unregistered_sellers = sorted([name for name in all_seller_names if name not in registered_seller_names])
+    all_seller_names = sorted(list(all_debts.keys()))
 
-    if not unregistered_sellers:
-        await update.message.reply_text("✅ Barcha sotuvchilar ro'yxatdan o'tgan.")
+    if not all_seller_names:
+        await update.message.reply_text("❌ Hech qanday sotuvchi ma'lumoti topilmadi.")
         return
 
-    keyboard = [[InlineKeyboardButton(name, callback_data=f"register_{name}")] for name in unregistered_sellers]
+    keyboard = [[InlineKeyboardButton(name, callback_data=f"register_{name}")] for name in all_seller_names]
     await update.message.reply_text("🔐 Tizimga kirish uchun o'zingizni tanlang:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -435,10 +655,23 @@ async def admin_sellers_list(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not sellers:
         await update.message.reply_text("❌ Hech qanday sotuvchi ro'yxatdan o'tmagan.")
         return
+
     message = "👥 **RO'YXATDAN O'TGAN SOTUVCHILAR:**\n\n"
-    for i, (seller_name, chat_id) in enumerate(sellers.items(), 1):
-        message += f"{i}. {seller_name} (ID: {chat_id})\n"
-    await update.message.reply_text(message)
+    for i, (seller_name, user_ids_data) in enumerate(sellers.items(), 1):
+        if isinstance(user_ids_data, list):
+            user_count = len(user_ids_data)
+            user_ids_str = ", ".join(str(uid) for uid in user_ids_data)
+        elif isinstance(user_ids_data, int):
+            user_count = 1
+            user_ids_str = str(user_ids_data)
+        else:
+            user_count = 0
+            user_ids_str = "N/A"
+
+        message += f"{i}. **{seller_name}** ({user_count} ta foydalanuvchi)\n"
+        message += f"   📱 ID: {user_ids_str}\n\n"
+
+    await update.message.reply_text(message, parse_mode='Markdown')
 
 async def admin_select_seller(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = create_seller_selection_keyboard()
@@ -527,6 +760,15 @@ async def bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except FileNotFoundError:
         last_update = "Hali yangilanmagan"
     sellers, all_debts = load_json(SELLERS_FILE), load_json(DATA_FILE)
+
+    # Umumiy foydalanuvchilar sonini hisoblash
+    total_users = 0
+    for user_ids_data in sellers.values():
+        if isinstance(user_ids_data, list):
+            total_users += len(user_ids_data)
+        elif isinstance(user_ids_data, int):
+            total_users += 1
+
     total_debts = sum(len(d) for d in all_debts.values())
 
     # Admin IDs ro'yxatini ko'rsatish
@@ -535,21 +777,38 @@ async def bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = (
         f"📈 **BOT STATISTIKASI**\n\n"
         f"📊 **Oxirgi yangilanish:** {last_update}\n"
-        f"👥 **Ro'yxatdan o'tgan sotuvchilar:** {len(sellers)} ta\n"
+        f"👥 **Sotuvchilar soni:** {len(sellers)} ta\n"
+        f"👤 **Jami foydalanuvchilar:** {total_users} ta\n"
         f"💰 **Jami aktiv qarzdorliklar:** {total_debts} ta\n"
         f"🔐 **Adminlar:** {admin_list}"
     )
     await update.message.reply_text(message, parse_mode='Markdown')
 
 async def post_init(application: Application):
-    scheduler = AsyncIOScheduler(timezone=TZ_UZB)
-    scheduler.add_job(scheduled_job, 'cron', hour=6, minute=0, args=[application])
+    scheduler = AsyncIOScheduler(timezone=TZ_UZB)  # Toshkent vaqti
+
+    # TUZATILGAN: Vaqtni to'g'ri belgilash
+    scheduler.add_job(
+        scheduled_job_wrapper,
+        'cron',
+        hour=11,      # Ertalab 06:00 (Toshkent vaqti)
+        minute=52,    # 0 daqiqa
+        args=[application.bot]
+    )
     scheduler.start()
-    logger.info("Rejalashtiruvchi muvaffaqiyatli ishga tushdi (Har kuni soat 06:00).")
+    logger.info("Rejalashtiruvchi muvaffaqiyatli ishga tushdi (Har kuni soat 06:30).")
+
     # Bot ishga tushganda bir marta ma'lumotlarni yangilash
-    await send_message_to_all_admins(application, "🤖 Bot qayta ishga tushdi. Ma'lumotlar birinchi marta yangilanmoqda...")
+    context_like = type('Context', (), {'bot': application.bot})()
+    await send_message_to_all_admins(context_like, "🤖 Bot qayta ishga tushdi. Ma'lumotlar birinchi marta yangilanmoqda...")
     await update_data_from_billz()
-    await send_message_to_all_admins(application, "✅ Ma'lumotlar yangilandi.")
+    await send_message_to_all_admins(context_like, "✅ Ma'lumotlar yangilandi.")
+
+async def scheduled_job_wrapper(bot):
+    """Scheduler uchun wrapper funksiya"""
+    # Context yaratish
+    context_like = type('Context', (), {'bot': bot})()
+    await scheduled_job(context_like)
 
 # Asosiy funksiyalar
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -559,11 +818,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data.startswith("register_"):
         seller_name = query.data.replace("register_", "")
         user_id = query.from_user.id
-        sellers = load_json(SELLERS_FILE)
-        sellers[seller_name] = user_id
-        save_json(sellers, SELLERS_FILE)
+
+        # Foydalanuvchini sotuvchiga qo'shish
+        add_user_to_seller(seller_name, user_id)
+
         await query.edit_message_text(text=f"✅ Rahmat, {seller_name}! Siz muvaffaqiyatli ro'yxatdan o'tdingiz.")
-        await send_message_to_all_admins(context, f"📢 Yangi sotuvchi ro'yxatdan o'tdi: {seller_name}")
+
+        # Adminlarga xabar yuborish
+        user_name = query.from_user.first_name or "Noma'lum"
+        await send_message_to_all_admins(context, f"📢 Yangi foydalanuvchi ro'yxatdan o'tdi:\n👤 {user_name} ({user_id}) → {seller_name}")
+
         await context.bot.send_message(user_id, "🎯 **Sizning panel** tayyor!", reply_markup=create_seller_keyboard())
 
     elif query.data.startswith("admin_seller_"):
@@ -589,6 +853,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "search_info":
         await query.answer("ℹ️ Sahifa ma'lumoti", show_alert=False)
 
+    # Profil o'zgartirish callback'lari
+    elif query.data.startswith("change_profile_"):
+        new_seller_name = query.data.replace("change_profile_", "")
+        await handle_profile_change_selection(query, context, new_seller_name)
+
+    elif query.data == "cancel_profile_change":
+        await query.edit_message_text("❌ Profil o'zgartirish bekor qilindi.")
+
 async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE, message_text: str):
     if message_text == "📊 Umumiy hisobot":
         await admin_general_report(update, context)
@@ -607,8 +879,7 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_seller_message(update: Update, context: ContextTypes.DEFAULT_TYPE, message_text: str):
     user_id = update.effective_chat.id
-    sellers = load_json(SELLERS_FILE)
-    seller_name = next((name for name, chat_id in sellers.items() if chat_id == user_id), None)
+    seller_name = get_seller_name_by_user_id(user_id)
 
     if not seller_name:
         await update.message.reply_text("❌ Siz ro'yxatdan o'tmagansiz. /start buyrug'ini bosing.")
@@ -624,6 +895,8 @@ async def handle_seller_message(update: Update, context: ContextTypes.DEFAULT_TY
         await seller_report(update, context, seller_name, "all")
     elif message_text == "🔍 Mijoz qidirish":
         await handle_search_request(update, context)
+    elif message_text == "🔄 Profil o'zgartirish":  # Yangi tugma
+        await handle_profile_change_request(update, context)
 
 def main():
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
