@@ -1,4 +1,4 @@
-# main.py (bot) - Ko'p foydalanuvchili versiya + Profile o'zgartirish
+# main.py - User ID'larni logdan yashirish uchun tuzatish
 
 import logging
 import os
@@ -50,8 +50,27 @@ SELLERS_FILE = "sellers.json"
 TZ_UZB = pytz.timezone('Asia/Tashkent')
 REPORT_LIMIT = 8 # Hisobotni matn yoki Excelda yuborish chegarasi
 
+# LOGGING SOZLASH - USER ID'LARNI YASHIRISH UCHUN
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# User ID'larni xavfsiz ko'rsatish uchun helper funksiya
+def safe_user_id(user_id):
+    """User ID ni xavfsiz formatda ko'rsatish"""
+    if isinstance(user_id, int):
+        user_id_str = str(user_id)
+        if len(user_id_str) > 6:
+            return f"***{user_id_str[-3:]}"  # Faqat oxirgi 3 ta raqam
+        return "***"
+    return "***"
+
+def safe_user_ids_list(user_ids):
+    """User ID'lar ro'yxatini xavfsiz formatda ko'rsatish"""
+    if isinstance(user_ids, list):
+        return [safe_user_id(uid) for uid in user_ids]
+    elif isinstance(user_ids, int):
+        return safe_user_id(user_ids)
+    return "***"
 
 # --- YORDAMCHI FUNKSIYALAR ---
 def is_admin(user_id):
@@ -144,16 +163,20 @@ async def send_message_to_all_admins(context: ContextTypes.DEFAULT_TYPE, message
         try:
             await context.bot.send_message(admin_id, message, parse_mode=parse_mode)
         except Exception as e:
-            logger.error(f"Admin {admin_id} ga xabar yuborishda xatolik: {e}")
+            logger.error(f"Admin ***{str(admin_id)[-3:]} ga xabar yuborishda xatolik: {e}")
 
 async def send_message_to_seller_users(context: ContextTypes.DEFAULT_TYPE, seller_name: str, message: str, parse_mode=None):
     """Sotuvchining barcha foydalanuvchilariga xabar yuborish"""
     user_ids = get_seller_user_ids(seller_name)
+    success_count = 0
     for user_id in user_ids:
         try:
             await context.bot.send_message(user_id, message, parse_mode=parse_mode)
+            success_count += 1
         except Exception as e:
-            logger.error(f"Sotuvchi '{seller_name}' ning foydalanuvchisi {user_id} ga xabar yuborishda xatolik: {e}")
+            logger.error(f"Sotuvchi '{seller_name}' ning foydalanuvchisiga xabar yuborishda xatolik: {e}")
+
+    logger.info(f"Sotuvchi '{seller_name}' ga {success_count}/{len(user_ids)} ta foydalanuvchiga xabar yuborildi")
 
 # --- JSON FAYL BILAN ISHLASH FUNKSIYALARI ---
 def load_json(filename):
@@ -469,11 +492,11 @@ async def handle_profile_change_selection(query, context: ContextTypes.DEFAULT_T
     # Yangi klaviaturani yuborish
     await context.bot.send_message(user_id, f"👋 Xush kelibsiz, {new_seller_name}!", reply_markup=create_seller_keyboard())
 
-    # Adminlarga xabar yuborish
+    # Adminlarga xabar yuborish (USER ID ni yashirish)
     unknown_text = "Noma'lum"
     admin_message = (
         f"🔄 **Profil o'zgarishi:**\n\n"
-        f"👤 Foydalanuvchi: {user_name} ({user_id})\n"
+        f"👤 Foydalanuvchi: {user_name} ({safe_user_id(user_id)})\n"
         f"🔸 Eski: {removed_from or unknown_text}\n"
         f"🔸 Yangi: {new_seller_name}"
     )
@@ -481,14 +504,12 @@ async def handle_profile_change_selection(query, context: ContextTypes.DEFAULT_T
 
     await query.answer()
 
-
-# ESKI KOD O'RNIGA - send_daily_reminders funksiyasini almashtiring
-
 async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Kunlik eslatmalarni yuborish boshlandi.")
     all_debts = load_json(DATA_FILE)
     sellers = load_json(SELLERS_FILE)
 
+    total_sent = 0
     for seller_name, user_ids_data in sellers.items():
         seller_debts = all_debts.get(seller_name, [])
 
@@ -513,16 +534,6 @@ async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
         if not overdue_debts and not upcoming_debts:
             continue
 
-        # Context-like obyekt yaratish send_report uchun
-        class FakeUpdate:
-            def __init__(self, chat_ids):
-                self.chat_ids = chat_ids
-
-            @property
-            def effective_chat(self):
-                # Birinchi user_id ni qaytarish (send_report faqat chat_id olish uchun)
-                return type('Chat', (), {'id': self.chat_ids[0] if self.chat_ids else 0})()
-
         # User IDs ni olish
         if isinstance(user_ids_data, list):
             user_ids = user_ids_data
@@ -544,6 +555,7 @@ async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
                         "🔔 Muddati o'tgan qarzdorliklar (Kunlik eslatma)",
                         f"kunlik_muddati_otgan_{seller_name}"
                     )
+                    total_sent += 1
 
                 # 5 kun qolganlar
                 if upcoming_debts:
@@ -555,26 +567,29 @@ async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
                         "⏰ Yaqinlashayotgan to'lov mudatlari (5 kun ichida)",
                         f"kunlik_5kun_qolgan_{seller_name}"
                     )
-
-                # Logger xabarini ham o'chirish mumkin yoki qoldirish mumkin (faqat log uchun)
+                    total_sent += 1
 
             except Exception as e:
-                logger.error(f"'{seller_name}' ning foydalanuvchisi {user_id} ga eslatma yuborishda xatolik: {e}")
+                logger.error(f"'{seller_name}' sotuvchisiga eslatma yuborishda xatolik: {e}")
 
-
-    logger.info("Kunlik eslatmalar yuborish yakunlandi.")
+    logger.info(f"Kunlik eslatmalar yuborish yakunlandi. Jami {total_sent} ta xabar yuborildi.")
 
 async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
     """Rejalashtirilgan vazifa - ma'lumotlarni yangilash va eslatmalar yuborish"""
+    logger.info("Rejalashtirilgan vazifa boshlandi: ma'lumotlarni yangilash")
     success = await update_data_from_billz()
     if success:
+        logger.info("Ma'lumotlar muvaffaqiyatli yangilandi, eslatmalar yuborilmoqda")
         await send_daily_reminders(context)
     else:
         await send_message_to_all_admins(context, "❌ Reja bo'yicha ma'lumotlarni yangilashda xatolik yuz berdi.")
+
 # --- BOT BUYRUQLARI VA HANDLERLAR ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_chat.id
     user_name = update.effective_user.first_name or "Foydalanuvchi"
+
+    logger.info(f"Yangi /start buyruq: {user_name} ({safe_user_id(user_id)})")
 
     if is_admin(user_id):
         await update.message.reply_text(f"👋 Salom, {user_name}! Siz administratorsiz.", reply_markup=create_admin_keyboard())
@@ -660,10 +675,10 @@ async def admin_sellers_list(update: Update, context: ContextTypes.DEFAULT_TYPE)
     for i, (seller_name, user_ids_data) in enumerate(sellers.items(), 1):
         if isinstance(user_ids_data, list):
             user_count = len(user_ids_data)
-            user_ids_str = ", ".join(str(uid) for uid in user_ids_data)
+            user_ids_str = ", ".join(safe_user_id(uid) for uid in user_ids_data)
         elif isinstance(user_ids_data, int):
             user_count = 1
-            user_ids_str = str(user_ids_data)
+            user_ids_str = safe_user_id(user_ids_data)
         else:
             user_count = 0
             user_ids_str = "N/A"
@@ -771,8 +786,8 @@ async def bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     total_debts = sum(len(d) for d in all_debts.values())
 
-    # Admin IDs ro'yxatini ko'rsatish
-    admin_list = ", ".join(str(admin_id) for admin_id in ADMIN_CHAT_IDS)
+    # Admin IDs ro'yxatini xavfsiz ko'rsatish
+    admin_list = ", ".join(safe_user_id(admin_id) for admin_id in ADMIN_CHAT_IDS)
 
     message = (
         f"📈 **BOT STATISTIKASI**\n\n"
@@ -791,8 +806,8 @@ async def post_init(application: Application):
     scheduler.add_job(
         scheduled_job_wrapper,
         'cron',
-        hour=11,      # Ertalab 06:00 (Toshkent vaqti)
-        minute=52,    # 0 daqiqa
+        hour=6,      # Ertalab 06:00 (Toshkent vaqti)
+        minute=30,   # 30 daqiqa
         args=[application.bot]
     )
     scheduler.start()
@@ -800,9 +815,9 @@ async def post_init(application: Application):
 
     # Bot ishga tushganda bir marta ma'lumotlarni yangilash
     context_like = type('Context', (), {'bot': application.bot})()
-    await send_message_to_all_admins(context_like, "🤖 Bot qayta ishga tushdi. Ma'lumotlar birinchi marta yangilanmoqda...")
+    await send_message_to_all_admins(context_like, "🤖 Bot qayta ishga tushdi. Ma'lumotlar yangilanmoqda...")
     await update_data_from_billz()
-    await send_message_to_all_admins(context_like, "✅ Ma'lumotlar yangilandi.")
+    await send_message_to_all_admins(context_like, "✅ Bot tayyor!")
 
 async def scheduled_job_wrapper(bot):
     """Scheduler uchun wrapper funksiya"""
@@ -818,17 +833,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data.startswith("register_"):
         seller_name = query.data.replace("register_", "")
         user_id = query.from_user.id
+        user_name = query.from_user.first_name or "Noma'lum"
 
         # Foydalanuvchini sotuvchiga qo'shish
         add_user_to_seller(seller_name, user_id)
 
         await query.edit_message_text(text=f"✅ Rahmat, {seller_name}! Siz muvaffaqiyatli ro'yxatdan o'tdingiz.")
 
-        # Adminlarga xabar yuborish
-        user_name = query.from_user.first_name or "Noma'lum"
-        await send_message_to_all_admins(context, f"📢 Yangi foydalanuvchi ro'yxatdan o'tdi:\n👤 {user_name} ({user_id}) → {seller_name}")
+        # Adminlarga xabar yuborish (USER ID ni yashirish)
+        admin_message = f"📢 Yangi foydalanuvchi ro'yxatdan o'tdi:\n👤 {user_name} ({safe_user_id(user_id)}) → {seller_name}"
+        await send_message_to_all_admins(context, admin_message)
 
         await context.bot.send_message(user_id, "🎯 **Sizning panel** tayyor!", reply_markup=create_seller_keyboard())
+        logger.info(f"Yangi ro'yxat: {user_name} ({safe_user_id(user_id)}) → {seller_name}")
 
     elif query.data.startswith("admin_seller_"):
         seller_name = query.data.replace("admin_seller_", "")
@@ -904,8 +921,12 @@ def main():
     application.add_handler(CommandHandler("cancel", cancel_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
+
+    admin_count = len(ADMIN_CHAT_IDS)
     print(f"🤖 Bot ishga tushdi...")
-    print(f"👑 Adminlar: {', '.join(str(admin_id) for admin_id in ADMIN_CHAT_IDS)}")
+    print(f"👑 Adminlar soni: {admin_count} ta")
+    logger.info(f"Bot ishga tushdi. {admin_count} ta admin mavjud.")
+
     application.run_polling()
 
 if __name__ == "__main__":
