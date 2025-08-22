@@ -209,28 +209,15 @@ def create_search_results_keyboard(page_results: List[Dict[str, Any]], user_id: 
     return InlineKeyboardMarkup(keyboard)
 
 def format_search_results_message(page_results: List[Dict[str, Any]], search_query: str, current_page: int, total_results: int) -> str:
-    """
-    Qidiruv natijalar uchun xabar formatini yaratish
-
-    Args:
-        page_results: Joriy sahifa natijalari
-        search_query: Qidiruv so'zi
-        current_page: Joriy sahifa raqami
-        total_results: Jami natijalar soni
-
-    Returns:
-        Formatlangan xabar matni
-    """
     if not page_results:
-        return f"❌ '{search_query}' bo'yicha mijozlar topilmadi."
+        return f"❌ '{search_query}' bo'yicha mijozlar topilmadi\\."
 
     total_pages = (total_results + 4) // 5
     message = (
         f"🔍 **'{search_query}'** bo'yicha natijalar\n"
-        f"📄 Sahifa {current_page + 1}/{total_pages} (Jami: {total_results} ta)\n\n"
+        f"📄 Sahifa {current_page + 1}/{total_pages} \\(Jami: {total_results} ta\\)\n\n"
         "👇 Batafsil ma'lumot uchun mijozni tanlang:"
     )
-
     return message
 
 def format_customer_details(customer_debts: List[Dict[str, Any]], customer_name: str) -> List[str]:
@@ -244,8 +231,14 @@ def format_customer_details(customer_debts: List[Dict[str, Any]], customer_name:
     Returns:
         Formatlangan xabarlar ro'yxati
     """
+    # MarkdownV2 uchun escape funksiyasi
+    def escape_markdown(text: str) -> str:
+        import re
+        escape_chars = r"_*[]()~`>#+-=|{}.!"
+        return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", str(text))
+
     if not customer_debts:
-        return [f"❌ {customer_name} uchun qarzdorliklar topilmadi."]
+        return [f"❌ {escape_markdown(customer_name)} uchun qarzdorliklar topilmadi\\."]
 
     total_debt = sum(debt.get('Qolgan Summa', 0) for debt in customer_debts)
     total_original = sum(debt.get('Qarz Summasi', 0) for debt in customer_debts)
@@ -253,11 +246,11 @@ def format_customer_details(customer_debts: List[Dict[str, Any]], customer_name:
 
     # Asosiy ma'lumotlar
     header_message = (
-        f"👤 **{customer_name.upper()}**\n\n"
-        f"📞 **Telefon:** {customer_debts[0].get('Mijoz Telefoni', 'N/A')}\n"
-        f"💸 **Umumiy qarz:** {total_original:,.0f} so'm\n"
-        f"✅ **To'langan:** {total_paid:,.0f} so'm\n"
-        f"💰 **Qolgan:** {total_debt:,.0f} so'm\n"
+        f"👤 **{escape_markdown(customer_name.upper())}**\n\n"
+        f"📞 **Telefon:** {escape_markdown(customer_debts[0].get('Mijoz Telefoni', 'N/A'))}\n"
+        f"💸 **Umumiy qarz:** {escape_markdown(f'{total_original:,.0f}')} so'm\n"
+        f"✅ **To'langan:** {escape_markdown(f'{total_paid:,.0f}')} so'm\n"
+        f"💰 **Qolgan:** {escape_markdown(f'{total_debt:,.0f}')} so'm\n"
         f"🔢 **Qarzdorliklar soni:** {len(customer_debts)} ta\n\n"
         "**📋 BATAFSIL MA'LUMOTLAR:**"
     )
@@ -277,13 +270,13 @@ def format_customer_details(customer_debts: List[Dict[str, Any]], customer_name:
         created_date = debt.get('Yaratilgan Sana', 'N/A')
 
         debt_info = (
-            f"\n{i}. **Chek:** {check_number} ({created_date})\n"
-            f"   💸 Umumiy: {original_amount:,.0f} so'm\n"
-            f"   ✅ To'langan: {paid_amount:,.0f} so'm\n"
-            f"   💰 Qolgan: {remaining_amount:,.0f} so'm\n"
-            f"   🗓️ Muddat: {payment_date} ({deadline})\n"
-            f"   👨‍💼 Sotuvchi: {seller_name}\n"
-            f"   📊 Status: {debt_status}\n"
+            f"\n{i}\\. **Chek:** {escape_markdown(check_number)} \\({escape_markdown(created_date)}\\)\n"
+            f"   💸 Umumiy: {escape_markdown(f'{original_amount:,.0f}')} so'm\n"
+            f"   ✅ To'langan: {escape_markdown(f'{paid_amount:,.0f}')} so'm\n"
+            f"   💰 Qolgan: {escape_markdown(f'{remaining_amount:,.0f}')} so'm\n"
+            f"   🗓️ Muddat: {escape_markdown(payment_date)} \\({escape_markdown(deadline)}\\)\n"
+            f"   👨‍💼 Sotuvchi: {escape_markdown(seller_name)}\n"
+            f"   📊 Status: {escape_markdown(debt_status)}\n"
         )
 
         # Agar xabar juda uzun bo'lsa, yangi xabar boshlash
@@ -293,7 +286,7 @@ def format_customer_details(customer_debts: List[Dict[str, Any]], customer_name:
         else:
             current_message += debt_info
 
-    # Oxirgi xabarni qo'shish
+
     if current_message:
         messages.append(current_message)
 
